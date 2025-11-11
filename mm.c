@@ -127,23 +127,32 @@ void mm_free(void* ptr)
  */
 void* mm_realloc(void* ptr, size_t size)
 {
-    void* oldptr = ptr;
-    void* newptr;
-    size_t copySize;
+    if (ptr == NULL)
+        return mm_malloc(size);
+    if (size == 0) {
+        mm_free(ptr);
+        return NULL;
+    }
 
-    newptr = mm_malloc(size);
+    size_t oldSize = GET_SIZE(HDRP(ptr)) - DSIZE;
+    void* newptr = mm_malloc(size);
     if (newptr == NULL)
         return NULL;
-    copySize = *(size_t*)((char*)oldptr - SIZE_T_SIZE);
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
+
+    size_t copySize = (size < oldSize) ? size : oldSize;
+    memcpy(newptr, ptr, copySize);
+    mm_free(ptr);
     return newptr;
 }
 
 void* find_fit_free_block(size_t asize) {
-    for (int i = 0; i < FREE_LIST_NUM;i++) {
+    int start_index = 0;
+    for (size_t s = 1; s < asize; s <<= 1) {
+        start_index++;
+        if (start_index >= FREE_LIST_NUM - 1) break;
+    }
+
+    for (int i = start_index; i < FREE_LIST_NUM; i++) {
         void* free_block = free_list_array[i];
         while (free_block != NULL) {
             if (asize <= GET_SIZE(HDRP(free_block))) {
@@ -171,8 +180,8 @@ int get_free_list_index(void* p) {
     int list_index = 0;
 
     for (size_t s = 1; s < size; s <<= 1) {
-        list_index += 1;
-        if (list_index >= FREE_LIST_NUM) break;
+        list_index++;
+        if (list_index >= FREE_LIST_NUM - 1) break;
     }
 
     return list_index;
@@ -182,16 +191,38 @@ void add_free_node(void* p) {
     int list_index = get_free_list_index(p);
 
     void* free_list_root = free_list_array[list_index];
-    *PREV_BLOCK_PTR(p) = NULL;
     if (free_list_root == NULL) {
+        *PREV_BLOCK_PTR(p) = NULL;
         *NEXT_BLOCK_PTR(p) = NULL;
         free_list_array[list_index] = p;
         return;
     }
 
-    *PREV_BLOCK_PTR(free_list_root) = ((char*)p);
-    *NEXT_BLOCK_PTR(p) = ((char*)free_list_root);
-    free_list_array[list_index] = p;
+    size_t size = GET_SIZE(HDRP(p));
+    void* head = free_list_root;
+    void* tail = NULL;
+    while (head && size > GET_SIZE(HDRP(head))) {
+        tail = head;
+        head = NEXT_BLOCK(head);
+    }
+
+    if (tail == NULL) {
+        *PREV_BLOCK_PTR(p) = NULL;
+        *NEXT_BLOCK_PTR(p) = ((char*)head);
+        *PREV_BLOCK_PTR(head) = ((char*)p);
+        free_list_array[list_index] = p;
+    }
+    else if (head == NULL) {
+        *PREV_BLOCK_PTR(p) = ((char*)tail);
+        *NEXT_BLOCK_PTR(p) = NULL;
+        *NEXT_BLOCK_PTR(tail) = ((char*)p);
+    }
+    else {
+        *PREV_BLOCK_PTR(p) = ((char*)tail);
+        *NEXT_BLOCK_PTR(p) = ((char*)head);
+        *NEXT_BLOCK_PTR(tail) = ((char*)p);
+        *PREV_BLOCK_PTR(head) = ((char*)p);
+    }
 }
 
 void withdraw_free_node(void* p) {
@@ -225,30 +256,35 @@ void set_tag(void* bp, size_t size, int is_allocated) {
 
 void* coalesce(void* bp) {
     void* pred_block = PRED_BLOCK(bp);
+
     void* succ_block = SUCC_BLOCK(bp);
-    void* pred_block_header = HDRP(pred_block);
     void* succ_block_header = HDRP(succ_block);
     void* curr_block_header = HDRP(bp);
-    size_t is_pred_block_allocated = GET_ALLOC(pred_block_header);
-    size_t is_succ_block_allocated = GET_ALLOC(succ_block_header);
+
+    size_t pred_alloc = GET_ALLOC(PRED_BLOCK_FTRP(bp));
+    size_t pred_size = GET_SIZE(PRED_BLOCK_FTRP(bp));
+    size_t succ_alloc = GET_ALLOC(succ_block_header);
+    size_t succ_size = GET_SIZE(succ_block_header);
+    size_t curr_size = GET_SIZE(curr_block_header);
 
     void* coalesced_block = bp;
-    if (!is_pred_block_allocated && !is_succ_block_allocated) {
+
+    if (!pred_alloc && pred_size > DSIZE && !succ_alloc && succ_size > 0) {
         withdraw_free_node(pred_block);
         withdraw_free_node(succ_block);
-        size_t new_size = GET_SIZE(pred_block_header) + GET_SIZE(succ_block_header) + GET_SIZE(curr_block_header);
+        size_t new_size = pred_size + succ_size + curr_size;
         set_tag(pred_block, new_size, 0);
         coalesced_block = pred_block;
     }
-    else if (!is_pred_block_allocated && is_succ_block_allocated) {
+    else if (!pred_alloc && pred_size > DSIZE && (succ_alloc || succ_size == 0)) {
         withdraw_free_node(pred_block);
-        size_t new_size = GET_SIZE(pred_block_header) + GET_SIZE(curr_block_header);
+        size_t new_size = pred_size + curr_size;
         set_tag(pred_block, new_size, 0);
         coalesced_block = pred_block;
     }
-    else if (is_pred_block_allocated && !is_succ_block_allocated) {
+    else if ((pred_alloc || pred_size <= DSIZE) && !succ_alloc && succ_size > 0) {
         withdraw_free_node(succ_block);
-        size_t new_size = GET_SIZE(succ_block_header) + GET_SIZE(curr_block_header);
+        size_t new_size = succ_size + curr_size;
         set_tag(bp, new_size, 0);
         coalesced_block = bp;
     }
