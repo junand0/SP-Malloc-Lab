@@ -29,7 +29,8 @@
 #define WSIZE 4
 #define DSIZE 8
 #define FREE_LIST_NUM 20
-#define PAGE_SIZE 1 << 12
+#define PAGE_SIZE (1 << 12)
+#define INIT_SIZE (1 << 6)
 #define SPLIT_MIN_SIZE 16
 
 #define PACK(size, alloc) (size | alloc) // pack size with alloc flag
@@ -77,11 +78,14 @@ int mm_init(void)
         free_list_array[i] = NULL;
     }
 
-    void* p = mem_sbrk(WSIZE);
+    void* p = mem_sbrk(WSIZE * 4);
     if (p == (void*)-1) return -1;
-    PUT_W(p, 0); // For 8 byte alignment of payload pointer
 
-    void* init_break = extend_heap(PAGE_SIZE);
+    PUT_W(p, 0); // For 8 byte alignment of payload pointer
+    set_tag(((char*)p + WSIZE), DSIZE, 0); // Prologue
+    PUT_W(((char*)p + WSIZE + DSIZE), PACK(0, 1)); // Epilogue
+
+    void* init_break = extend_heap(INIT_SIZE);
     if (init_break == NULL) return -1;
 
     return 0;
@@ -153,11 +157,11 @@ void* find_fit_free_block(size_t asize) {
 
 void* extend_heap(size_t size) {
     size_t asize = ALIGN(size);
-    void* hp = mem_sbrk(asize);
-    if (hp == (void*)-1) return NULL;
+    void* bp = mem_sbrk(asize);
+    if (bp == (void*)-1) return NULL;
 
-    char* bp = (char*)hp + WSIZE;
     set_tag(bp, asize, 0);
+    PUT_W(HDRP(SUCC_BLOCK(bp)), PACK(0, 1)); // Epilogue
 
     return coalesce(bp);
 }
@@ -178,8 +182,15 @@ void add_free_node(void* p) {
     int list_index = get_free_list_index(p);
 
     void* free_list_root = free_list_array[list_index];
-    *PREV_BLOCK_PTR(free_list_root) = (char*)p;
-    *NEXT_BLOCK_PTR(p) = (char*)free_list_root;
+    *PREV_BLOCK_PTR(p) = NULL;
+    if (free_list_root == NULL) {
+        *NEXT_BLOCK_PTR(p) = NULL;
+        free_list_array[list_index] = p;
+        return;
+    }
+
+    *PREV_BLOCK_PTR(free_list_root) = ((char*)p);
+    *NEXT_BLOCK_PTR(p) = ((char*)free_list_root);
     free_list_array[list_index] = p;
 }
 
@@ -261,5 +272,6 @@ void* place(void* bp, size_t asize) {
     void* splitted_succ_block = SUCC_BLOCK(bp);
     set_tag(splitted_succ_block, over_size, 0);
     add_free_node(splitted_succ_block);
-    return splitted_succ_block;
+
+    return bp;
 }
