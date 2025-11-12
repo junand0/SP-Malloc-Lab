@@ -36,7 +36,7 @@
 #define FREE_LIST_MIN_SIZE DSIZE
 
 #define PACK(size, alloc) (size | alloc) // pack size with alloc flag
-#define GET_SIZE(hp) (*(size_t *)(hp) & ~0x7)
+#define GET_SIZE(hp) (*(size_t *)hp & ~0x7)
 #define GET_ALLOC(hp) (*(size_t *)hp & 0x1)
 #define HDRP(bp) ((size_t *)((char *)bp - WSIZE))
 #define FTRP(bp) ((size_t *)((char *)bp + GET_SIZE(HDRP(bp)) - DSIZE))
@@ -152,11 +152,28 @@ void* mm_realloc(void* ptr, size_t size)
     void* succ_block_header = HDRP(SUCC_BLOCK(ptr));
     int is_succ_free = !GET_ALLOC(succ_block_header);
     int is_succ_epilogue = !GET_SIZE(succ_block_header);
-    // If successor block is free block OR successor block is epilogue
-    if (is_succ_free || is_succ_epilogue)
+
+    // If successor block is epilogue
+    if (is_succ_epilogue) {
+        size_t realloc_size = old_size + GET_SIZE(succ_block_header);
+        if (realloc_size < new_size)
+        {
+            size_t extend_size = MAX(new_size - realloc_size, PAGE_SIZE);
+            void* extend_p = extend_heap(extend_size);
+            if (extend_p == NULL)
+            {
+                return NULL;
+            }
+            realloc_size = realloc_size + extend_size;
+        }
+
+        withdraw_free_node(SUCC_BLOCK(ptr));
+        set_tag(newptr, realloc_size, 1);
+    }
+    // If successor block is free block
+    else if (is_succ_free)
     {
         size_t realloc_size = old_size + GET_SIZE(succ_block_header);
-        void* realloc_extra_block = SUCC_BLOCK(ptr);
         if (realloc_size < new_size)
         {
             size_t extend_size = MAX(new_size, PAGE_SIZE);
@@ -166,11 +183,12 @@ void* mm_realloc(void* ptr, size_t size)
                 return NULL;
             }
 
-            realloc_size = is_succ_epilogue ? realloc_size + extend_size : extend_size;
-            newptr = is_succ_epilogue ? ptr : extend_p;
-            realloc_extra_block = is_succ_epilogue ? realloc_extra_block : extend_p;
+            realloc_size = extend_size;
+            newptr = extend_p;
         }
-        withdraw_free_node(realloc_extra_block);
+        else {
+            withdraw_free_node(SUCC_BLOCK(ptr));
+        }
         set_tag(newptr, realloc_size, 1);
     }
     else {
@@ -179,7 +197,6 @@ void* mm_realloc(void* ptr, size_t size)
             return NULL;
         mm_free(ptr);
     }
-
 
     size_t copySize = MIN(old_size, new_size);
     memcpy(newptr, ptr, copySize);
@@ -366,20 +383,25 @@ void* coalesce(void* bp)
 void* place(void* bp, size_t asize)
 {
     size_t block_size = GET_SIZE(HDRP(bp));
-    size_t over_size = block_size - asize;
+    size_t redundant_size = block_size - asize;
 
     withdraw_free_node(bp);
 
-    if (over_size < SPLIT_MIN_SIZE)
+    if (redundant_size < SPLIT_MIN_SIZE)
     {
         set_tag(bp, block_size, 1);
         return bp;
     }
 
-    set_tag(bp, asize, 1);
-    void* splitted_succ_block = SUCC_BLOCK(bp);
-    set_tag(splitted_succ_block, over_size, 0);
-    add_free_node(splitted_succ_block);
+    if (asize >= REALLOC_BUFF_SIZE + SPLIT_MIN_SIZE) {
+        set_tag(bp, redundant_size, 0);
+        set_tag(SUCC_BLOCK(bp), asize, 1);
+        add_free_node(bp);
+        return SUCC_BLOCK(bp);
+    }
 
+    set_tag(bp, asize, 1);
+    set_tag(SUCC_BLOCK(bp), redundant_size, 0);
+    add_free_node(SUCC_BLOCK(bp));
     return bp;
 }
