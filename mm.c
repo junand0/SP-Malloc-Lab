@@ -28,11 +28,12 @@
 
 #define WSIZE 4
 #define DSIZE 8
-#define FREE_LIST_NUM 20
+#define FREE_LIST_NUM 15
 #define PAGE_SIZE (1 << 12)
 #define INIT_SIZE (1 << 6)
 #define SPLIT_MIN_SIZE 16
 #define REALLOC_BUFF_SIZE (1 << 6)
+#define FREE_LIST_MIN_SIZE DSIZE
 
 #define PACK(size, alloc) (size | alloc) // pack size with alloc flag
 #define GET_SIZE(hp) (*(size_t *)(hp) & ~0x7)
@@ -188,7 +189,7 @@ void* mm_realloc(void* ptr, size_t size)
 void* find_fit_free_block(size_t asize)
 {
     int start_index = 0;
-    for (size_t s = 1; s < asize; s <<= 1)
+    for (size_t s = FREE_LIST_MIN_SIZE; s < asize; s <<= 1)
     {
         start_index++;
         if (start_index >= FREE_LIST_NUM - 1)
@@ -228,7 +229,7 @@ int get_free_list_index(void* p)
     const size_t size = GET_SIZE(HDRP(p));
     int list_index = 0;
 
-    for (size_t s = 1; s < size; s <<= 1)
+    for (size_t s = FREE_LIST_MIN_SIZE; s < size; s <<= 1)
     {
         list_index++;
         if (list_index >= FREE_LIST_NUM - 1)
